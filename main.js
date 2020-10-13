@@ -127,6 +127,10 @@ class Game extends Component {
 
 render(<Game/>, document.getElementById("root"));
 
+// let game = <Game/>;
+
+// console.log(game.virtualDom);
+
 function calculateWinner(squares) {
     const lines = [
         [0, 1, 2],

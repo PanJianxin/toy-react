@@ -1,45 +1,5 @@
 const RENDER_TO_DOM = Symbol("Render to dom");
 
-class ElementWrapper {
-    constructor(type) {
-        this.root = document.createElement(type);
-    }
-
-    setAttribute(name, value) {
-        if (name.match(/^on([\s\S]+)$/)) {
-            this.root.addEventListener(RegExp.$1.replace(/^[\s\S]/, char => char.toLowerCase()), value);
-        } else if (name === "className") {
-            this.root.setAttribute("class", value);
-        } else {
-            this.root.setAttribute(name, value);
-        }
-    }
-
-    appendChild(component) {
-        let range = document.createRange();
-        range.setStart(this.root, this.root.childNodes.length);
-        range.setEnd(this.root, this.root.childNodes.length);
-        range.deleteContents();
-        component[RENDER_TO_DOM](range);
-    }
-
-    [RENDER_TO_DOM](range) {
-        range.deleteContents();
-        range.insertNode(this.root);
-    }
-}
-
-class TextWrapper {
-    constructor(content) {
-        this.root = document.createTextNode(content);
-    }
-
-    [RENDER_TO_DOM](range) {
-        range.deleteContents();
-        range.insertNode(this.root);
-    }
-}
-
 export class Component {
     constructor() {
         this.props = Object.create(null);
@@ -55,21 +15,66 @@ export class Component {
         this.children.push(component);
     }
 
-    [RENDER_TO_DOM](range) {
-        this._range = range;
-        this.render()[RENDER_TO_DOM](range);
+    get virtualDom() {
+        return this.render().virtualDom;
     }
 
-    rerender() {
-        let oldRange = this._range;
+    [RENDER_TO_DOM](range) {
+        this._range = range;
+        this._virtualDom = this.virtualDom;
+        this._virtualDom[RENDER_TO_DOM](range);
+        // this.render()[RENDER_TO_DOM](range);
+    }
 
-        let range = document.createRange();
-        range.setStart(oldRange.startContainer, oldRange.startOffset);
-        range.setEnd(oldRange.startContainer, oldRange.startOffset);
-        this[RENDER_TO_DOM](range);
+    update() {
+        let isSameNode = (oldNode, newNode) => {
+            if (oldNode.type !== newNode.type || Object.keys(oldNode).length !== Object.keys(newNode).length) {
+                return false;
+            }
+            for (let name in newNode.props) {
+                if (newNode.props[name] !== oldNode.props[name]) {
+                    return false;
+                }
+            }
+            if (newNode.type === "#text") {
+                return newNode.content === oldNode.content;
+            }
+            return true;
+        }
+        let update = (oldNode, newNode) => {
+            if (!isSameNode(oldNode, newNode)) {
+                newNode[RENDER_TO_DOM](oldNode._range);
 
-        oldRange.setStart(range.endContainer,range.endOffset);
-        oldRange.deleteContents();
+            } else {
+                newNode._range = oldNode._range;
+                let oldChildren = oldNode.virtualChildren;
+                let newChildren = newNode.virtualChildren;
+
+                if (!newChildren || !newChildren.length) {
+                    return;
+                }
+
+                let tailRange = oldChildren[oldChildren.length - 1]._range;
+
+                for (let i = 0; i < newChildren.length; i++) {
+                    let newChild = newChildren[i];
+                    if (i < oldChildren.length) {
+                        let oldChild = oldChildren[i];
+                        update(oldChild, newChild);
+                    } else {
+                        let range = document.createRange();
+                        range.setStart(tailRange.endContainer, tailRange.endOffset);
+                        range.setEnd(tailRange.endContainer, tailRange.endOffset);
+                        newChild[RENDER_TO_DOM](range);
+                        tailRange = range;
+                    }
+                }
+            }
+
+        }
+        let virtualDom = this.virtualDom;
+        update(this._virtualDom, virtualDom);
+        this._virtualDom = virtualDom;
     }
 
     setState(newState) {
@@ -88,8 +93,82 @@ export class Component {
             };
             merge(this.state, newState);
         }
-        this.rerender();
+        this.update();
     }
+}
+
+class ElementWrapper extends Component {
+    constructor(type) {
+        super(type);
+        this.type = type;
+    }
+
+    get virtualDom() {
+        this.virtualChildren = this.children.map(child => child.virtualDom);
+        return this;
+    }
+
+    [RENDER_TO_DOM](range) {
+        this._range = range;
+        let root = document.createElement(this.type);
+
+        for (let name in this.props) {
+            let value = this.props[name];
+            if (name.match(/^on([\s\S]+)$/)) {
+                root.addEventListener(RegExp.$1.replace(/^[\s\S]/, char => char.toLowerCase()), value);
+            } else if (name === "className") {
+                root.setAttribute("class", value);
+            } else {
+                root.setAttribute(name, value);
+            }
+        }
+
+        if (this.virtualChildren === null) {
+            this.virtualChildren = this.children.map(child => child.virtualDom);
+        }
+
+        for (let child of this.virtualChildren) {
+            let childRange = document.createRange();
+            childRange.setStart(root, root.childNodes.length);
+            childRange.setEnd(root, root.childNodes.length);
+            childRange.deleteContents();
+            child[RENDER_TO_DOM](childRange);
+        }
+
+        replaceContent(range, root);
+    }
+}
+
+class TextWrapper extends Component {
+    constructor(content) {
+        super(content);
+        this.type = "#text";
+        this.content = content;
+    }
+
+    get virtualDom() {
+        return this;
+        // return {
+        //     type: "#text",
+        //     content: this.content,
+        //     children: this.children.map(child => child.virtualDom)
+        // }
+    }
+
+    [RENDER_TO_DOM](range) {
+        this._range = range;
+        let root = document.createTextNode(this.content);
+        replaceContent(range, root);
+    }
+}
+
+function replaceContent(range, node) {
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.deleteContents();
+
+    range.setStartBefore(node);
+    range.setEndAfter(node);
 }
 
 export function createElement(type, attributes, ...children) {
